@@ -8,8 +8,8 @@ Data analysis of large patient/encounter records into usable format for statisti
 
 The purpose of these steps is to create a list of codes (each code is a procedure) that happened prior to the encounter, or in the same encounter, as in which the patient received radical cystectomy (removal of the bladder). 
 
-
 Step 1 = drop encounter_id if no end date to encounter (encounter file). Delete these from the encounter file. 
+
 Step 2 = Find date of radical cystectomy (RC) per patient_id (procedure file)
 Date of RC is the date at which 
 Code = 0TRB07Z OR 0TRB47Z
@@ -22,11 +22,9 @@ OR
 Code = 51580 OR 51590 OR 51575 OR 51596 OR 51585 OR 51595
 
 Step 3 = Find associated encounter_id for that date per patient_id (procedure file), call this encounter_RC.
+
 Step 4 = Delete all encounter_ids per patient_id that have a start date after the end date of encounter_RC. This step is 	to be done in the procedure file. 
-The start and end dates of all encounters are in the encounter file
-
-At this point, the procedure file will only contain encounter_ids that happened prior to, or the encounter in which, the patient received RC. 
-
+The start and end dates of all encounters are in the encounter file. At this point, the procedure file will only contain encounter_ids that happened prior to, or the encounter in which, the patient received RC. 
 
 The following steps are to designate our three cohorts:
 Cohort 1 - Patient has no bladder, has ovaries, has fallopian tubes
@@ -35,9 +33,7 @@ Cohort 3 - Patient has no bladder, has no ovaries, and has no fallopian tubes
 
 Step 5 = Copy the procedure file and rename it “Cohort file”
 
-Step 6 = Delete all patients with “maybe” ovaries and/or “maybe” fallopian tubes prior to Encounter_RC (Before deleting, text me the total  number of these patients) based off the following:
-
-Code = 58150 OR 58152 OR 58180 OR 58200 OR 58210 OR 58240
+Step 6 = Delete all patients with “maybe” ovaries and/or “maybe” fallopian tubes prior to Encounter_RC (Before deleting, text me the total  number of these patients) based off the following: Code = 58150 OR 58152 OR 58180 OR 58200 OR 58210 OR 58240
 
 Step 7 = Tell Pranjal the number of unique entries in variable code_systems
 There will be a maximum of 4 unique entries = ICD-9, ICD-10, CPT, and HCP..Text me which of the 4 are there
@@ -46,7 +42,7 @@ Step 8 = Create variable “cohort.” Any patients with a ICD-9 or HCP.. code s
 
 Step 9 = All other patients get the value of “1” for the variable cohort. 
 The below steps all exclude cohort 4.
-If patiens have Code =  58700 OR 58600 OR 58605 OR 58611 OR 58615 OR 58670 OR 58679 OR 0UT7 OR (0UT6 AND 0UT5) → value of “2” for the variable cohort. However, if patients have any of the following code:
+If patients have Code =  58700 OR 58600 OR 58605 OR 58611 OR 58615 OR 58670 OR 58679 OR 0UT7 OR (0UT6 AND 0UT5) → value of “2” for the variable cohort. However, if patients have any of the following code:
 Code = 58262 OR  58291 OR 58571 OR 58573 OR  58552 OR 58554 OR 58542 OR 58544 OR 58720 OR  58661 OR 58940 OR 58943 OR (0UT0 AND 0UT1) OR 0UT2 → value of “3” for the variable cohort. 
 Things to watch out for:
 If patient does not have any of the above listed codes in step 9, they are in cohort 1
