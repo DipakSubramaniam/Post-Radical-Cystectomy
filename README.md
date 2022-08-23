@@ -1,4 +1,4 @@
-# Post-Radical-Cystectomy WIP
+# Post-Radical-Cystectomy
 
 Pranjal Agrawal
 Gaurish Agrawal
