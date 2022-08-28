@@ -6,6 +6,13 @@ import pandas as pd
 from dask import dataframe as dd
 import numpy
 from collections import Counter
+import warnings
+
+# * timing
+begin = time.time()
+
+# * warning suppressor
+warnings.filterwarnings('ignore')  # suppresses SettingWithCopyWarning in steps 2 & 3
 
 # * reading in procedure file
 ipfile = input('* enter the procedure csv file name: ')
@@ -108,9 +115,21 @@ patient_rc_dict = {k: v for k, v in patient_rc_dict.items() if v != 0}  # patien
 patient_enc_dict = {k: v for k, v in patient_enc_dict.items() if v != ''}  # patient, encounter_rc
 rc_date_dict = {k: v for k, v in rc_date_dict.items() if v != ''}  # patient, date_rc
 rc_end_date_dict = {k: v for k, v in rc_end_date_dict.items() if v != ''}  # patient, end date dummy value
-print('* removed a small fraction of patients wherein their codes do not register a radical cystectomy. new total: ', len(patient_rc_dict))
+pat_dfp = pat_dfp.reset_index()
+flag_rc = []
+print('* adding and populating rc column with radical cystectomy flags')
+for ind, row in pat_dfp.iterrows():
+    cur_patient = row['patient_id']
+    cur_encounter = row['encounter_id']
+    if cur_patient in patient_enc_dict and cur_encounter == patient_enc_dict[cur_patient]:
+        flag_rc.append(1)
+    else:
+        flag_rc.append(0)
+pat_dfp.insert(loc=9, column='rc', value=flag_rc)
+print('* removed a small fraction of patients wherein their codes do not register a radical cystectomy')  # , len(patient_rc_dict)
 print('* steps 2 & 3 complete')
 
+# * step 4 - deleting all encounters per patient that have a start date after the end date of radical cystectomy
 print('* step 4 - deleting all encounters per patient that have a start date after the end date of radical cystectomy')
 print('* end dates being tabulated for all radical cystectomies')
 indices_to_delete = []
@@ -143,11 +162,13 @@ pat_dfp = pat_dfp[pat_dfp.dele != 1]
 print('* deleted rows containing encounters with dates after the end of the patient radical cystectomy')
 print('* step 4 complete')
 
+# * step 5 - preparing cohort file
 print('* step 5 - copying procedure file into cohort file')
 new_filename = 'cohort.csv'
 print('* new cohort file set to be created: ', new_filename)
 print('* step 5 complete')
 
+# * step 6 - removing certain patients no under consideration
 print('* step 6 - deleting patients who fall under maybe ovaries/fallopian_tubes categories before radical cystectomy')
 uniq_cohort_list = pat_dfp['patient_id'].unique()
 cohort_rc_dict = dict.fromkeys(uniq_cohort_list, 0)
@@ -168,7 +189,7 @@ maybe_list = [key for key, value in cohort_rc_dict.items() if value == 1]
 print('* rows in cohort dataframe before deletion: ', pat_dfp.shape[0])
 print('* deleting patients with maybe codes')
 maybe_deletes = []
-pat_dfp = pat_dfp.reset_index()
+pat_dfp = pat_dfp.reset_index(drop=True)
 for inx, row in pat_dfp.iterrows():
     if row['patient_id'] in maybe_list:
         maybe_deletes.append(1)
@@ -180,13 +201,18 @@ print('* rows in cohort dataframe after deletion: ', pat_dfp.shape[0])
 print('* final count of patients: ', len(pat_dfp['patient_id'].unique()))
 print('* step 6 complete')
 
+# * step 7 - code system frequencies
 print('* step 7 - finding frequency of each unique code system')
-frequency = pat_dfp['code_system'].value_counts()
-print("* frequency of values in column 'code_system' :")
-print(frequency)
+# frequency = pat_dfp['code_system'].value_counts()
+frq_values = pat_dfp['code_system'].value_counts().keys().tolist()
+frq_counts = pat_dfp['code_system'].value_counts().tolist()
+print("* unique group values in column 'code_system' : ", frq_values)
+print("* frequency of values in column 'code_system' : ", frq_counts)
+# print(frequency)
 print('* step 7 complete')
 
-print('* step 8 - determining patient cohorts')
+# * steps 8 & 9 - designating cohorts
+print('* steps 8 & 9 - determining patient cohorts')
 cohort_uniq_patients = pat_dfp['patient_id'].unique()
 cohort_last_dict = dict.fromkeys(cohort_uniq_patients, 0)
 coh3cpt = ['58262', '58291', '58571', '58573', '58552', '58554', '58542', '58544', '58720', '58661', '58940', '58943']
@@ -232,7 +258,7 @@ c3_list = [key for key, value in cohort_last_dict.items() if value == 3]
 c2_list = [key for key, value in cohort_last_dict.items() if value == 2]
 c1_list = [key for key, value in cohort_last_dict.items() if value == 1]
 cohort_toggle = []
-# pat_dfp = pat_dfp.reset_index(drop=True, inplace=True)
+print('* adding cohort id values for each patient/encounter row')
 pat_dfp = pat_dfp.reset_index(drop=True)
 for indx, row in pat_dfp.iterrows():
     if row['patient_id'] in c3_list:
@@ -241,13 +267,32 @@ for indx, row in pat_dfp.iterrows():
         cohort_toggle.append(2)
     else:
         cohort_toggle.append(1)  # makes the assumption that in the end there will be no cohort 4 items
-pat_dfp.insert(loc=9, column='cohort', value=cohort_toggle)
+pat_dfp.insert(loc=10, column='cohort', value=cohort_toggle)
 column_list = ['patient_id', 'encounter_id', 'code_system', 'code', 'principal_procedure_indicator', 'date',
-               'derived_by_TriNetX', 'source_id', 'cohort']
+               'derived_by_TriNetX', 'source_id', 'rc', 'cohort']
 pat_dfp[column_list].to_csv(new_filename, encoding='utf-8', index=False)  # new file
 print('* new cohort file created: ', new_filename)
-print('* step 8 complete')
+print('* steps 8 & 9 complete')
+
+# * step 10 - data mining part 1
+print('* step 10 - determining patient information up till or at radical cystectomy')
+# * col: patient rc date, birth year, race, ethnicity, bmi, death year, {16} diagnoses, {3} medications, {1} diagnosis
+# pats_uniq = pat_dfp['patient_id'].unique()
+print('* step 10 complete')
+
+# * step 11 - data mining part 2
+print('* step 11 - determining patient outcomes across their lifetimes')
+# * cols:
+print('* step 11 complete')
+
+# * step 12 - data mining part 3
+print('* step 12 - determining patient outcomes during or after radical cystectomy')
+# * cols:
+print('* step 12 complete')
 
 # test print toggles
 pd.set_option('display.max_columns', None)  # set in order to display all columns in dataframe when test printing
 pd.set_option('display.max_rows', None)  # set in order to display all rows in dataframe when test printing
+
+# * timing
+print("* %s seconds" % (time.time() - begin))
