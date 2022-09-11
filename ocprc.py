@@ -7,26 +7,18 @@ from dask import dataframe as dd
 import numpy
 from collections import Counter
 import warnings
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # * timing
 begin = time.time()
 
 # * warning suppressor
 warnings.filterwarnings('ignore')  # suppresses SettingWithCopyWarning in steps 2 & 3
-
-# * reading in procedure file
-ipfile = input('* enter the procedure csv file name: ')
-pro = dd.read_csv(ipfile)  # procedure data frame
-pro.to_parquet('pr.parquet', engine='pyarrow')  # storing in parquet format
-
-# * reading in encounter file
-iefile = input('* enter the encounter csv file name: ')
-enc = dd.read_csv(iefile)  # encounter data frame
-enc.to_parquet('en.parquet', engine='pyarrow')  # storing in parquet format
-
-# * storing in the more efficient Apache Parquet format for easier read/write
-dfp = dd.read_parquet('pr.parquet', engine='pyarrow', storage_options={"anon": True, "use_ssl": True},)
-dfe = dd.read_parquet('en.parquet', engine='pyarrow', storage_options={"anon": True, "use_ssl": True},)
+# * reading procedure and encounter files
+print('* reading in procedure and encounter csv files')
+dfp = dd.read_csv('procedure.csv')
+dfe = dd.read_csv('encounter.csv')
 
 # * step 1 - dropping encounters if no end date present
 print('* step 1 - dropping encounters without an end date in encounter csv file')
@@ -53,7 +45,7 @@ cpt_codes = ['51580', '51590', '51575', '51596', '51585', '51595']  # '51597' ta
 count = 0
 rc_flag = []
 unique_patients = []
-pat_dfp = dfp_s1  # pat_dfp = dfp.compute() # revert if needed
+pat_dfp = dfp_s1
 uniq_pat_list = pat_dfp['patient_id'].unique()
 patient_rc_dict = dict.fromkeys(uniq_pat_list, 0)
 patient_enc_dict = dict.fromkeys(uniq_pat_list, '')
@@ -61,6 +53,7 @@ rc_date_dict = dict.fromkeys(uniq_pat_list, '')
 rc_end_date_dict = dict.fromkeys(uniq_pat_list, '')
 gbpe = pat_dfp.groupby(['patient_id', 'encounter_id'])
 cpe = []  # codes per encounter
+
 print('* searching all the patient-encounter pairs and data from each pair')
 for pe, grp in gbpe:  # searching all the patient-encounter pairs and each pair's data containing the other columns
     cpe = grp['code']
@@ -109,6 +102,7 @@ for pe, grp in gbpe:  # searching all the patient-encounter pairs and each pair'
         count += 1
     else:
         rc_flag.append(0)
+
 print('* counted all radical cystectomies, stored corresponding encounter_id and date values')
 #  * removing x# patients who did not register an radical cystectomy but were supposed to
 patient_rc_dict = {k: v for k, v in patient_rc_dict.items() if v != 0}  # patient, rc_flag
@@ -116,17 +110,26 @@ patient_enc_dict = {k: v for k, v in patient_enc_dict.items() if v != ''}  # pat
 rc_date_dict = {k: v for k, v in rc_date_dict.items() if v != ''}  # patient, date_rc
 rc_end_date_dict = {k: v for k, v in rc_end_date_dict.items() if v != ''}  # patient, end date dummy value
 pat_dfp = pat_dfp.reset_index()
+date_rc = []
 flag_rc = []
+dict_rc_count = pat_dfp.to_dict('records')
+
 print('* adding and populating rc column with radical cystectomy flags')
-for ind, row in pat_dfp.iterrows():
+for row in dict_rc_count:
     cur_patient = row['patient_id']
     cur_encounter = row['encounter_id']
+    if cur_patient in rc_date_dict:
+        date_rc.append(rc_date_dict[cur_patient])
+    else:
+        date_rc.append('no__date')
     if cur_patient in patient_enc_dict and cur_encounter == patient_enc_dict[cur_patient]:
         flag_rc.append(1)
     else:
         flag_rc.append(0)
+
 pat_dfp.insert(loc=9, column='rc', value=flag_rc)
-print('* removed a small fraction of patients wherein their codes do not register a radical cystectomy')  # , len(patient_rc_dict)
+pat_dfp.insert(loc=10, column='rc_date', value=date_rc)
+print('* removed a small fraction of patients wherein their codes do not register a radical cystectomy')
 print('* steps 2 & 3 complete')
 
 # * step 4 - deleting all encounters per patient that have a start date after the end date of radical cystectomy
@@ -134,16 +137,19 @@ print('* step 4 - deleting all encounters per patient that have a start date aft
 print('* end dates being tabulated for all radical cystectomies')
 indices_to_delete = []
 new_dfe = new_dfe.reset_index()
-for index, row in new_dfe.iterrows():
+dict_end_enc = new_dfe.to_dict('records')
+for row in dict_end_enc:
     cur_patient = row['patient_id']
     cur_start_date = row['start_date']
     cur_end_date = row['end_date']
     if (cur_patient in rc_date_dict) and (cur_start_date == int(rc_date_dict[cur_patient])):
         rc_end_date_dict[cur_patient] = str(int(cur_end_date))
+
 print('* parsing for encounters that happened after the radical cystectomies')
 count = 0
 pat_dfp = pat_dfp.reset_index()
-for ind, row in pat_dfp.iterrows():
+dict_del_after = pat_dfp.to_dict('records')
+for row in dict_del_after:
     cur_patient = row['patient_id']
     cur_encounter = row['encounter_id']
     cur_start_date = row['date']
@@ -155,8 +161,8 @@ for ind, row in pat_dfp.iterrows():
             indices_to_delete.append(0)
     else:
         indices_to_delete.append(0)
-print('* identified number of rows: ', count)
-pat_dfp.insert(loc=8, column='dele', value=indices_to_delete)
+
+pat_dfp.insert(loc=11, column='dele', value=indices_to_delete)
 pd.set_option('display.max_columns', None)
 pat_dfp = pat_dfp[pat_dfp.dele != 1]
 print('* deleted rows containing encounters with dates after the end of the patient radical cystectomy')
@@ -182,23 +188,19 @@ for pe, grp in gbpe2:  # searching all the patient-encounter pairs and each pair
         maybe_count += 1
         cohort_rc_dict[pe[0]] += 1
 res = Counter(cohort_rc_dict.values())
-print("* total patients: ", len(cohort_rc_dict))
-print("* patients having maybe codes: ", str(dict(res)[1]))
-print("* patients not having such codes: ", str(dict(res)[0]))
 maybe_list = [key for key, value in cohort_rc_dict.items() if value == 1]
-print('* rows in cohort dataframe before deletion: ', pat_dfp.shape[0])
+
 print('* deleting patients with maybe codes')
 maybe_deletes = []
 pat_dfp = pat_dfp.reset_index(drop=True)
-for inx, row in pat_dfp.iterrows():
+dict_maybe = pat_dfp.to_dict('records')
+for row in dict_maybe:
     if row['patient_id'] in maybe_list:
         maybe_deletes.append(1)
     else:
         maybe_deletes.append(0)
-pat_dfp.insert(loc=8, column='maybe', value=maybe_deletes)
+pat_dfp.insert(loc=12, column='maybe', value=maybe_deletes)
 pat_dfp = pat_dfp[pat_dfp.maybe != 1]
-print('* rows in cohort dataframe after deletion: ', pat_dfp.shape[0])
-print('* final count of patients: ', len(pat_dfp['patient_id'].unique()))
 print('* step 6 complete')
 
 # * step 7 - code system frequencies
@@ -206,9 +208,8 @@ print('* step 7 - finding frequency of each unique code system')
 # frequency = pat_dfp['code_system'].value_counts()
 frq_values = pat_dfp['code_system'].value_counts().keys().tolist()
 frq_counts = pat_dfp['code_system'].value_counts().tolist()
-print("* unique group values in column 'code_system' : ", frq_values)
+print("* unique values in column 'code_system' : ", frq_values)
 print("* frequency of values in column 'code_system' : ", frq_counts)
-# print(frequency)
 print('* step 7 complete')
 
 # * steps 8 & 9 - designating cohorts
@@ -223,31 +224,40 @@ coh2cpt = ['58700', '58600', '58605', '58611', '58615', '58670', '58679']
 coh2icd10a = ['0UT5']
 coh2icd10b = ['0UT6']
 coh2icd10c = ['0UT7']
-code_sys = ['CPT', 'HCPCS', 'ICD-10-PCS', 'ICD-9-CM']
 gbpe3 = pat_dfp.groupby(['patient_id', 'encounter_id'])
 cpe = []  # codes per encounter
 cspe = []  # code systems per encounter
+
+print('* searching all patient-encounter pairs for cohort classification')
 for pe, grp in gbpe3:  # searching all the patient-encounter pairs and each pair's data containing the other columns
     cpe = grp['code']
     cspe = grp['code_system']
     also_in_three = False  # variable that is toggled if codes are in cohort 3 and 2, prevents cohort 2 from claiming it
     if cohort_last_dict[pe[0]] == 0:  # checking if patient has already been accounted for
-        cohort_last_dict[pe[0]] = 4  # everyone gets 4 by default, 4 = non cpt/icd-10 code patients
-        # print('code systems for this pair: ', cspe)
-        if set(cspe).intersection(['CPT']) or set(cspe).intersection(['ICD-10-PCS']):  # if code system is CPT or ICD-10-PCS, 1 = any CPT/ICD10 code type
-            cohort_last_dict[pe[0]] = 1
-            # print('codes for pair: ', cpe)
-            # if codes also intersect with cohort 3 designated codes --> cohort 3
-            if set(cpe).intersection(coh3cpt) or set([cd[:4] for cd in cpe]).intersection(coh3icd10c) or (set([cd[:4] for cd in cpe]).intersection(coh3icd10a) and set([cd[:4] for cd in cpe]).intersection(coh3icd10b)):
+        if 'HCPCS' in cspe.tolist() or 'ICD-9-CM' in cspe.tolist():
+            cohort_last_dict[pe[0]] = 4  # 4 = non cpt/icd-10 code patients
+        else:
+            cohort_last_dict[pe[0]] = 1  # everyone else gets a 1
+            if set(cpe).intersection(coh3cpt) or set([cd[:4] for cd in cpe]).intersection(coh3icd10c) or (
+                    set([cd[:4] for cd in cpe]).intersection(coh3icd10a) and set([cd[:4] for cd in cpe]).intersection(
+                    coh3icd10b)):
                 cohort_last_dict[pe[0]] = 3
             # if codes also intersect with cohort 3 and 2 designated codes, --> cohort 3
-            if (set(cpe).intersection(coh3cpt) or set([cd[:4] for cd in cpe]).intersection(coh3icd10c) or (set([cd[:4] for cd in cpe]).intersection(coh3icd10a) and set([cd[:4] for cd in cpe]).intersection(coh3icd10b))) and (set([cd[:4] for cd in cpe]).intersection(coh2cpt) or set([cd[:4] for cd in cpe]).intersection(coh2icd10c) or (set([cd[:4] for cd in cpe]).intersection(coh2icd10a) and set([cd[:4] for cd in cpe]).intersection(coh2icd10b))):
+            if (set(cpe).intersection(coh3cpt) or set([cd[:4] for cd in cpe]).intersection(coh3icd10c) or (
+                    set([cd[:4] for cd in cpe]).intersection(coh3icd10a) and set([cd[:4] for cd in cpe]).intersection(
+                    coh3icd10b))) and (
+                    set([cd[:4] for cd in cpe]).intersection(coh2cpt) or set([cd[:4] for cd in cpe]).intersection(
+                    coh2icd10c) or (set([cd[:4] for cd in cpe]).intersection(coh2icd10a) and set(
+                    [cd[:4] for cd in cpe]).intersection(coh2icd10b))):
                 cohort_last_dict[pe[0]] = 3
                 also_in_three = True  # will prevent next if statement from being processed
             # if codes also intersect with cohort 2 designated codes --> cohort 2
-            if (set(cpe).intersection(coh2cpt) or set([cd[:4] for cd in cpe]).intersection(coh2icd10c) or (set([cd[:4] for cd in cpe]).intersection(coh2icd10a) and set([cd[:4] for cd in cpe]).intersection(coh2icd10b))) and not also_in_three:
+            if (set(cpe).intersection(coh2cpt) or set([cd[:4] for cd in cpe]).intersection(coh2icd10c) or (
+                    set([cd[:4] for cd in cpe]).intersection(coh2icd10a) and set([cd[:4] for cd in cpe]).intersection(
+                    coh2icd10b))) and not also_in_three:
                 cohort_last_dict[pe[0]] = 2
 
+# * cohort analysis
 res = Counter(cohort_last_dict.values())
 print("* total patients: ", len(cohort_last_dict))
 print('* cohort breakdown: ', res)
@@ -257,38 +267,327 @@ c4_list = [key for key, value in cohort_last_dict.items() if value == 4]
 c3_list = [key for key, value in cohort_last_dict.items() if value == 3]
 c2_list = [key for key, value in cohort_last_dict.items() if value == 2]
 c1_list = [key for key, value in cohort_last_dict.items() if value == 1]
+print("* total patients who have icd-9/hcpcs (cohort 0): ", len(c4_list))
+print("* total patients in cohort 1: ", len(c1_list))
+print("* total patients in cohort 2: ", len(c2_list))
+print("* total patients in cohort 3: ", len(c3_list))
 cohort_toggle = []
+
 print('* adding cohort id values for each patient/encounter row')
 pat_dfp = pat_dfp.reset_index(drop=True)
-for indx, row in pat_dfp.iterrows():
+dict_coh = pat_dfp.to_dict('records')
+for row in dict_coh:
     if row['patient_id'] in c3_list:
         cohort_toggle.append(3)
     elif row['patient_id'] in c2_list:
         cohort_toggle.append(2)
     else:
         cohort_toggle.append(1)  # makes the assumption that in the end there will be no cohort 4 items
-pat_dfp.insert(loc=10, column='cohort', value=cohort_toggle)
+
+pat_dfp.insert(loc=13, column='cohort', value=cohort_toggle)
 column_list = ['patient_id', 'encounter_id', 'code_system', 'code', 'principal_procedure_indicator', 'date',
-               'derived_by_TriNetX', 'source_id', 'rc', 'cohort']
+               'derived_by_TriNetX', 'source_id', 'rc', 'rc_date', 'cohort']
 pat_dfp[column_list].to_csv(new_filename, encoding='utf-8', index=False)  # new file
 print('* new cohort file created: ', new_filename)
 print('* steps 8 & 9 complete')
 
+# * step 9.5 - data mining pre-work
+print('* step 9.5 - preparing data structures')
+column10 = ['pat_id', 'rc_date', 'cohort', 'yob', 'race', 'ethnicity', 'bmi', 'yod', 'fh_breast', 'ph_breast', 'fh_ovarian', 'ph_ovarian', 'ph_colorectal', 'lynch_syndrome', 'hereditary_breast&ovarian_lf', 'tobacco', 'hypertensive', 'diabetes', 'hyperlipidemia', 'ischemic_hd', 'overweight/obese', 'polycystic_od/s', 'endometriosis', 'pid', 'systemic_contraceptives', 'estrogens', 'progestins', 'hysterectomy']
+column11 = ['pat_id', 'rc_date', 'cohort', 'dementia', 'cog_impair', 'parkinsons', 'osteoperosis', 'ischemic_hd', 'myocard_infarc', 'aff_mood_disorders', 'anxiety', 'depression', 'fem_sex_dysf', 'stroke', 'deep_vein_thromb', 'pulm_emb', 'genital_prolapse']
+column12 = ['pat_id', 'rc_date', 'cohort', 'dementia', 'cog_impair', 'parkinsons', 'osteoperosis', 'ischemic_hd', 'myocard_infarc', 'aff_mood_disorders', 'anxiety', 'depression', 'fem_sex_dysf', 'stroke', 'deep_vein_thromb', 'pulm_emb', 'genital_prolapse', 'ovarian_cancer', 'peritoneal_cancer', 'breast_cancer']
+data_set_10 = {column: [] for column in column10}
+data_set_11 = {column: [] for column in column11}
+data_set_12 = {column: [] for column in column12}
+cohort_uniq2 = pat_dfp['patient_id'].unique()
+cohort_patient_flags = dict.fromkeys(cohort_uniq_patients, 0)
+s10_11_12 = 0
+coh_dict = pat_dfp.to_dict('records')
+
+# * dataframe where rc is flagged and actually has a date
+for row in coh_dict:
+    if row['rc'] == 1 and row['rc_date'] != 'no__date' and cohort_patient_flags[row['patient_id']] == 0:
+        cohort_patient_flags[row['patient_id']] += 1  # flag ensuring each valid patient with an rc is counted only once
+        data_set_10['pat_id'].append(row['patient_id'])
+        data_set_11['pat_id'].append(row['patient_id'])
+        data_set_12['pat_id'].append(row['patient_id'])
+        data_set_10['rc_date'].append(row['rc_date'])
+        data_set_11['rc_date'].append(row['rc_date'])
+        data_set_12['rc_date'].append(row['rc_date'])
+        data_set_10['cohort'].append(row['cohort'])
+        data_set_11['cohort'].append(row['cohort'])
+        data_set_12['cohort'].append(row['cohort'])
+        s10_11_12 += 1
+
+# * setting the rest of the data to empty lists of each lists' size
+for key in data_set_10:
+    if key not in ['pat_id', 'rc_date', 'cohort']:
+        data_set_10[key] = [None] * s10_11_12
+for key in data_set_11:
+    if key not in ['pat_id', 'rc_date', 'cohort']:
+        data_set_11[key] = ['N'] * s10_11_12
+for key in data_set_12:
+    if key not in ['pat_id', 'rc_date', 'cohort']:
+        data_set_12[key] = ['N'] * s10_11_12
+
+# * reading in patient, lab_result, diagnosis and medication_drug .csv files
+print('* reading patient, vital_signs, diagnosis and medication_drug csv files')
+df_pat = pd.read_csv('patient.csv')
+dict_pat = df_pat.to_dict('list')
+df_vit = pd.read_csv('vitals_signs.csv')
+dict_vit = df_vit.to_dict('records')
+df_dia = pd.read_csv('diagnosis.csv')
+dict_dia = df_dia.to_dict('records')
+df_med = pd.read_csv('medication_drug.csv')
+dict_med = df_med.to_dict('records')
+dict_pro = pat_dfp.to_dict('records')
+print('* step 9.5 complete')
+
 # * step 10 - data mining part 1
 print('* step 10 - determining patient information up till or at radical cystectomy')
-# * col: patient rc date, birth year, race, ethnicity, bmi, death year, {16} diagnoses, {3} medications, {1} diagnosis
-# pats_uniq = pat_dfp['patient_id'].unique()
+# * col: patient, rc date, birth year, race, ethnicity, bmi, death year, {16} diagnoses, {3} medications, {1} diagnosis
+# * for each patient in data set 10, grabbing corresponding patient csv data
+print('* for each patient in data set 10, grabbing corresponding patient csv data')
+elm_ind = 0
+for elm in data_set_10['pat_id']:
+    pos = dict_pat['patient_id'].index(elm)
+    data_set_10['yob'][elm_ind] = dict_pat['year_of_birth'][pos]
+    data_set_10['race'][elm_ind] = dict_pat['race'][pos]
+    data_set_10['ethnicity'][elm_ind] = dict_pat['ethnicity'][pos]
+    data_set_10['yod'][elm_ind] = dict_pat['month_year_death'][pos]
+    elm_ind += 1
+
+# * reformatting birth and death values
+data_set_10['yob'] = [str(e) for e in data_set_10['yob']]
+data_set_10['yob'] = ['n/a' if v in ['nan'] else v for v in data_set_10['yob']]  # replacing 'nan' with 'n/a'
+data_set_10['yob'] = [v[:-2] if '.0' in v else v for v in data_set_10['yob']]  # deleting '.0'
+data_set_10['yod'] = [str(e) for e in data_set_10['yod']]
+data_set_10['yod'] = ['living' if v in ['nan'] else v for v in data_set_10['yod']]  # replacing 'nan' with 'living'
+data_set_10['yod'] = [v[:-4] if '.0' in v else v for v in data_set_10['yod']]  # deleting '##.0'
+
+# * for each patient in data set 10, grabbing corresponding vitals_signs csv data
+print('* for each patient in data set 10, grabbing corresponding vitals_signs csv data')
+for row in dict_vit:
+    if row['units_of_measure'] == 'kg/m2' and row['patient_id'] in data_set_10['pat_id']:
+        pos = data_set_10['pat_id'].index(row['patient_id'])
+        data_set_10['bmi'][pos] = row['value']  # str(int(row['value']))
+data_set_10['bmi'] = ['None' if v is None else v for v in data_set_10['bmi']]  # replacing None with 'n/a'
+data_set_10['bmi'] = [str(e) for e in data_set_10['bmi']]
+data_set_10['bmi'] = ['n/a' if v in ['nan'] else v for v in data_set_10['bmi']]  # replacing 'nan' with 'n/a'
+print('* total patients (', elm_ind, ') - valid bmi values (', data_set_10['bmi'].count('None'), ') = (', (elm_ind-data_set_10['bmi'].count('None')), ')')
+
+# * for each patient in data set 10, grabbing corresponding diagnosis csv data
+print('* for each patient in data set 10, grabbing corresponding diagnosis csv data')
+# * at the time of cystectomy or up till the time of cystectomy
+for row in dict_dia:
+    if row['patient_id'] in data_set_10['pat_id'] and row['date'] <= data_set_10['rc_date'][data_set_10['pat_id'].index(row['patient_id'])]:
+        pos = data_set_10['pat_id'].index(row['patient_id'])
+        if row['code'][:5] == 'Z80.3':
+            data_set_10['fh_breast'][pos] = 'Y'
+        if row['code'][:5] == 'Z85.3':
+            data_set_10['ph_breast'][pos] = 'Y'
+        if row['code'][:6] == 'Z80.41':
+            data_set_10['fh_ovarian'][pos] = 'Y'
+        if row['code'][:6] == 'Z85.43':
+            data_set_10['ph_ovarian'][pos] = 'Y'
+        if row['code'][:7] == 'Z85.038':
+            data_set_10['ph_colorectal'][pos] = 'Y'
+        if row['code'][:6] == 'V84.09':
+            data_set_10['lynch_syndrome'][pos] = 'Y'
+        if row['code'][:6] == 'Z15.01':
+            data_set_10['hereditary_breast&ovarian_lf'][pos] = 'Y'
+        if row['code'][:5] == 'Z72.0':
+            data_set_10['tobacco'][pos] = 'Y'
+        if row['code'][:3] in ['I{}'.format(i) for i in range(10, 17)]:
+            data_set_10['hypertensive'][pos] = 'Y'
+        if row['code'][:3] in ['E{}'.format(i) for i in ["%.2d" % i for i in range(8, 14)]]:
+            data_set_10['diabetes'][pos] = 'Y'
+        if row['code'][:3] == 'E78':
+            data_set_10['hyperlipidemia'][pos] = 'Y'
+        if row['code'][:3] in ['I{}'.format(i) for i in range(20, 26)]:
+            data_set_10['ischemic_hd'][pos] = 'Y'
+        if row['code'][:3] == 'E66':
+            data_set_10['overweight/obese'][pos] = 'Y'
+        if row['code'][:3] == 'E28':
+            data_set_10['polycystic_od/s'][pos] = 'Y'
+        if row['code'][:3] == 'N80':
+            data_set_10['endometriosis'][pos] = 'Y'
+        if row['code'][:3] == 'N73':
+            data_set_10['pid'][pos] = 'Y'
+
+# * for each patient in data set 10, grabbing corresponding procedure csv (bmi) data
+print('* for each patient in data set 10, grabbing corresponding procedure csv (bmi) data')
+for row in dict_pro:
+    if row['patient_id'] in data_set_10['pat_id'] and row['date'] <= data_set_10['rc_date'][data_set_10['pat_id'].index(row['patient_id'])]:
+        pos = data_set_10['pat_id'].index(row['patient_id'])
+        if row['code'] in ['1013911', '1008870'] or row['code'] in [1013911, 1008870]:
+            data_set_10['hysterectomy'][pos] = 'Y'
+
+# * for each patient in data set 10, grabbing corresponding medication_drug csv data
+print('* for each patient in data set 10, grabbing corresponding medication_drug csv data')
+for row in dict_med:
+    if row['patient_id'] in data_set_10['pat_id'] and row['start_date'] <= data_set_10['rc_date'][data_set_10['pat_id'].index(row['patient_id'])]:
+        pos = data_set_10['pat_id'].index(row['patient_id'])
+        if len(str(row['code'])) >= 5:
+            if str(row['code'])[:5] == 'HS200':
+                data_set_10['systemic_contraceptives'][pos] = 'Y'
+            if str(row['code'])[:5] == 'HS300':
+                data_set_10['estrogens'][pos] = 'Y'
+            if str(row['code'])[:5] == 'HS800':
+                data_set_10['progestins'][pos] = 'Y'
+
+# * reformatting Y/N values for last 20 columns in data set 10
+for key in data_set_10:
+    if key in column10[-20:]:  # targeting all the yes/no variables
+        data_set_10[key] = ['N' if v is None else v for v in data_set_10[key]]  # replacing None with 'N'
 print('* step 10 complete')
 
 # * step 11 - data mining part 2
 print('* step 11 - determining patient outcomes across their lifetimes')
-# * cols:
+# * col: patient, rc date, (14) diagnoses
+# * for each patient in data set 11, grabbing corresponding diagnosis csv data
+print('* for each patient in data set 11, grabbing corresponding diagnosis csv data')
+# * at any point of life
+first_11 = dict.fromkeys(data_set_11['pat_id'], ([0] * (len(column11) - 3)))
+for row in dict_dia:
+    if row['patient_id'] in data_set_11['pat_id']:
+        pos = data_set_11['pat_id'].index(row['patient_id'])
+        diag = first_11[row['patient_id']]
+        if row['code'][:3] == 'F03' and diag[0] == 0:
+            data_set_11['dementia'][pos] = str(row['date'])[:4]
+            diag[0] += 1
+        if (row['code'][:6] == 'G31.84' or row['code'][:3] == 'F09') and diag[1] == 0:
+            data_set_11['cog_impair'][pos] = str(row['date'])[:4]
+            diag[1] += 1
+        if row['code'][:3] == 'G20' and diag[2] == 0:
+            data_set_11['parkinsons'][pos] = str(row['date'])[:4]
+            diag[2] += 1
+        if row['code'][:3] in ['M80', 'M81'] and diag[3] == 0:
+            data_set_11['osteoperosis'][pos] = str(row['date'])[:4]
+            diag[3] += 1
+        if row['code'][:3] in ['I{}'.format(i) for i in range(20, 26)] and diag[4] == 0:
+            data_set_11['ischemic_hd'][pos] = str(row['date'])[:4]
+            diag[4] += 1
+        if row['code'][:3] in ['I21', 'I22'] and diag[5] == 0:
+            data_set_11['myocard_infarc'][pos] = str(row['date'])[:4]
+            diag[5] += 1
+        if row['code'][:3] in ['F{}'.format(i) for i in range(30, 40)] and diag[6] == 0:
+            data_set_11['aff_mood_disorders'][pos] = str(row['date'])[:4]
+            diag[6] += 1
+        if row['code'][:3] == 'F41' and diag[7] == 0:
+            data_set_11['anxiety'][pos] = str(row['date'])[:4]
+            diag[7] += 1
+        if row['code'][:3] in ['F32', 'F33'] and diag[8] == 0:
+            data_set_11['depression'][pos] = str(row['date'])[:4]
+            diag[8] += 1
+        if row['code'][:3] == 'F52' and diag[9] == 0:
+            data_set_11['fem_sex_dysf'][pos] = str(row['date'])[:4]
+            diag[9] += 1
+        if row['code'][:3] in ['I{}'.format(i) for i in range(60, 64)] and diag[10] == 0:
+            data_set_11['stroke'][pos] = str(row['date'])[:4]
+            diag[10] += 1
+        if row['code'][:5] in ['I82.4', 'I82.6'] and diag[11] == 0:
+            data_set_11['deep_vein_thromb'][pos] = str(row['date'])[:4]
+            diag[11] += 1
+        if row['code'][:3] == 'I26' and diag[12] == 0:
+            data_set_11['pulm_emb'][pos] = str(row['date'])[:4]
+            diag[12] += 1
+        if row['code'][:3] == 'N81' and diag[13] == 0:
+            data_set_11['genital_prolapse'][pos] = str(row['date'])[:4]
+            diag[13] += 1
 print('* step 11 complete')
 
 # * step 12 - data mining part 3
 print('* step 12 - determining patient outcomes during or after radical cystectomy')
-# * cols:
+# * col: patient, rc date, (17) diagnoses
+# * for each patient in data set 12, grabbing corresponding diagnosis csv data
+print('* for each patient in data set 12, grabbing corresponding diagnosis csv data')
+# * at the time of cystectomy or after the time of cystectomy
+first_12 = dict.fromkeys(data_set_12['pat_id'], ([0] * (len(column12) - 3)))
+for row in dict_dia:
+    if row['patient_id'] in data_set_12['pat_id'] and row['date'] >= data_set_12['rc_date'][data_set_12['pat_id'].index(row['patient_id'])]:
+        pos = data_set_12['pat_id'].index(row['patient_id'])
+        diag = first_12[row['patient_id']]
+        if row['code'][:3] == 'F03' and diag[0] == 0:
+            data_set_12['dementia'][pos] = str(row['date'])[:4]
+            diag[0] += 1
+        if (row['code'][:6] == 'G31.84' or row['code'][:3] == 'F09') and diag[1] == 0:
+            data_set_12['cog_impair'][pos] = str(row['date'])[:4]
+            diag[1] += 1
+        if row['code'][:3] == 'G20' and diag[2] == 0:
+            data_set_12['parkinsons'][pos] = str(row['date'])[:4]
+            diag[2] += 1
+        if row['code'][:3] in ['M80', 'M81'] and diag[3] == 0:
+            data_set_12['osteoperosis'][pos] = str(row['date'])[:4]
+            diag[3] += 1
+        if row['code'][:3] in ['I{}'.format(i) for i in range(20, 26)] and diag[4] == 0:
+            data_set_12['ischemic_hd'][pos] = str(row['date'])[:4]
+            diag[4] += 1
+        if row['code'][:3] in ['I21', 'I22'] and diag[5] == 0:
+            data_set_12['myocard_infarc'][pos] = str(row['date'])[:4]
+            diag[5] += 1
+        if row['code'][:3] in ['F{}'.format(i) for i in range(30, 40)] and diag[6] == 0:
+            data_set_12['aff_mood_disorders'][pos] = str(row['date'])[:4]
+            diag[6] += 1
+        if row['code'][:3] == 'F41' and diag[7] == 0:
+            data_set_12['anxiety'][pos] = str(row['date'])[:4]
+            diag[7] += 1
+        if row['code'][:3] in ['F32', 'F33'] and diag[8] == 0:
+            data_set_12['depression'][pos] = str(row['date'])[:4]
+            diag[8] += 1
+        if row['code'][:3] == 'F52' and diag[9] == 0:
+            data_set_12['fem_sex_dysf'][pos] = str(row['date'])[:4]
+            diag[9] += 1
+        if row['code'][:3] in ['I{}'.format(i) for i in range(60, 64)] and diag[10] == 0:
+            data_set_12['stroke'][pos] = str(row['date'])[:4]
+            diag[10] += 1
+        if row['code'][:5] in ['I82.4', 'I82.6'] and diag[11] == 0:
+            data_set_12['deep_vein_thromb'][pos] = str(row['date'])[:4]
+            diag[11] += 1
+        if row['code'][:3] == 'I26' and diag[12] == 0:
+            data_set_12['pulm_emb'][pos] = str(row['date'])[:4]
+            diag[12] += 1
+        if row['code'][:3] == 'N81' and diag[13] == 0:
+            data_set_12['genital_prolapse'][pos] = str(row['date'])[:4]
+            diag[13] += 1
+        if row['code'][:3] == 'C56' and diag[14] == 0:
+            data_set_12['ovarian_cancer'][pos] = str(row['date'])[:4]
+            diag[14] += 1
+        if row['code'][:5] in ['C48.1', 'C48.2'] and diag[15] == 0:
+            data_set_12['peritoneal_cancer'][pos] = str(row['date'])[:4]
+            diag[15] += 1
+        if row['code'][:3] == 'C50' and diag[16] == 0:
+            data_set_12['breast_cancer'][pos] = str(row['date'])[:4]
+            diag[16] += 1
 print('* step 12 complete')
+
+print('* step 13 - gathering requested variable data into single excel file')
+outfile = 'data_set.xlsx'
+df10 = pd.DataFrame.from_dict(data_set_10)
+df11 = pd.DataFrame.from_dict(data_set_11)
+df12 = pd.DataFrame.from_dict(data_set_12)
+print('* writing to ', outfile)
+with pd.ExcelWriter(outfile) as writer:
+    df10.to_excel(writer, sheet_name='Before Or On Encounter_RC')
+    df11.to_excel(writer, sheet_name='At Any Time In Life')
+    df12.to_excel(writer, sheet_name='During Or After Encounter_RC')
+print('* step 13 complete')
+
+print('* step 14 - creating frequency/time plot')
+b_list = [1980, 1985, 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2022]
+freq_rc, bins, bars = plt.hist([int(str(y)[:4]) for y in df10['rc_date'].tolist()], bins=b_list, edgecolor="orange", color="blue", rwidth=0.95)
+plt.xlabel('RC Years')
+plt.xticks(b_list, rotation=45)
+plt.ylabel('Number of RCs')
+plt.title('Frequency of Radical Cystectomies (RC) over Time')
+for bar in bars:
+    x = (bar._x0 + bar._x1) / 2
+    y = bar._y1 + 0.05
+    plt.text(x, y, int(bar._y1), ha='center')
+plt.tight_layout()
+plt.savefig('rc_plot.jpg')
+plt.show()
+print('* step 14 complete')
 
 # test print toggles
 pd.set_option('display.max_columns', None)  # set in order to display all columns in dataframe when test printing
